@@ -1,37 +1,82 @@
 import 'dart:async';
+import 'dart:math';
+import 'dart:ui' as ui;
+import 'package:chronos_rpg/core/constants/game_icons.dart';
+import 'package:chronos_rpg/core/graphics/sprite_loader.dart';
 import 'package:chronos_rpg/models/upgradeItem.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../models/player.dart';
 import '../models/skill.dart';
 import '../models/enemy.dart';
-import 'dart:math'; // Adicionado para lógica de probabilidade
+import '../models/equipment.dart';
 
 class GameProvider with ChangeNotifier {
+  // --- ESTADO DO JOGADOR ---
   Player player = Player(lastUpdate: DateTime.now());
-  int activeSkillIndex = -1;
-  int monstersDefeatedInGroup = 0; // Quantos monstros dos 10 ele já matou
-  int currentMonsterIndex = 0; // Qual dos 10 monstros ele está enfrentando
-  bool bossAvailable = false;
+  // Novos Slots no GameProvider
+  Equipment? equippedWeapon;
+  Equipment? equippedArmor;
+  Equipment? equippedHelmet;
+  Equipment? equippedLeggings;
+  Equipment? equippedBoots;
+  Equipment? equippedRing;
+  Equipment? equippedPotionHP;
+  Equipment? equippedPotionMP;
 
-  // Inventário inicializado com os novos recursos
+  // --- ESTADO DE ATIVIDADE ---
+  int activeSkillIndex =
+      -1; // -1 = Parado, 0 = Mineração, 1 = Pesca, 2 = Lenhador
+  int monstersDefeatedInGroup = 0;
+  int currentMonsterIndex = 0;
+  bool bossAvailable = false;
+  ui.Image? spriteSheet;
+
+  // --- INVENTÁRIO ---
   Map<String, int> inventory = {
     'pedra': 0,
     'minerio_carvao': 0,
     'minerio_ferro': 0,
+    'minerio_ouro': 0, // Adicionado para suportar a recompensa do Boss
     'peixe_cru': 0,
     'madeira_carvalho': 0,
     'couro_monstro': 0,
   };
 
+  // --- DEFINIÇÕES DE DADOS (DATABASE IMOBILIZADA) ---
   final List<Skill> skills = [
     Skill(name: "Mineração", iconPath: "mining"),
     Skill(name: "Pesca", iconPath: "fishing"),
-    Skill(name: "Combate", iconPath: "combat"),
     Skill(name: "Lenhador", iconPath: "woodcutting"),
   ];
 
-  List<Enemy> allEnemies = [
+  final List<UpgradeItem> shopUpgrades = [
+    UpgradeItem(
+      name: "Picareta de Bronze",
+      description: "Melhora a qualidade dos minérios encontrados.",
+      price: 500,
+      targetSkill: "Mineração",
+    ),
+    UpgradeItem(
+      name: "Vara de Bambu Reforçada",
+      description: "Pesca 2x mais rápido.",
+      price: 450,
+      targetSkill: "Pesca",
+    ),
+  ];
+
+  final Map<String, double> itemPrices = {
+    'pedra': 1.0,
+    'minerio_carvao': 5.0,
+    'minerio_ferro': 15.0,
+    'minerio_ouro': 100.0,
+    'peixe_cru': 5.0,
+    'madeira_carvalho': 3.0,
+    'couro_monstro': 15.0,
+  };
+
+  final List<Enemy> allEnemies = [
     Enemy(
       name: "Lodo Temporal",
       maxHealth: 50,
@@ -55,34 +100,7 @@ class GameProvider with ChangeNotifier {
     ),
   ];
 
-  List<UpgradeItem> shopUpgrades = [
-    UpgradeItem(
-      name: "Picareta de Bronze",
-      description: "Melhora a qualidade dos minérios encontrados.",
-      price: 500,
-      targetSkill: "Mineração",
-    ),
-    UpgradeItem(
-      name: "Vara de Bambu Reforçada",
-      description: "Pesca 2x mais rápido.",
-      price: 450,
-      targetSkill: "Pesca",
-    ),
-  ];
-
-  final Map<String, double> itemPrices = {
-    'pedra': 1.0,
-    'minerio_carvao': 5.0,
-    'minerio_ferro': 15.0,
-    'peixe_cru': 5.0,
-    'madeira_carvalho': 3.0,
-    'couro_monstro': 15.0,
-  };
-
-  int lastOfflineSeconds = 0;
-  String offlineSummary = "";
-  double lastOfflineGold = 0;
-
+  // --- ESTADO DE COMBATE ---
   Enemy currentEnemy = Enemy(
     name: "Lodo Temporal",
     maxHealth: 50,
@@ -91,13 +109,18 @@ class GameProvider with ChangeNotifier {
     minLevel: 0,
   );
 
+  // --- CONTROLE DE UI/OFFLINE ---
+  int lastOfflineSeconds = 0;
+  String offlineSummary = "";
+  double lastOfflineGold = 0;
+
   Timer? _timer;
 
   GameProvider() {
     _initGame();
   }
 
-  // --- GETTERS ---
+  // --- GETTERS CALCULADOS ---
   double get totalInventoryValue {
     double total = 0;
     inventory.forEach((key, quantity) {
@@ -106,16 +129,20 @@ class GameProvider with ChangeNotifier {
     return total;
   }
 
-  // --- INICIALIZAÇÃO E LOOP ---
+  int get totalStrength =>
+      player.strength + (equippedWeapon?.strengthBonus ?? 0);
+  int get totalDefense =>
+      player.defense +
+      (equippedHelmet?.defenseBonus ?? 0) +
+      (equippedArmor?.defenseBonus ?? 0) +
+      (equippedLeggings?.defenseBonus ?? 0) +
+      (equippedBoots?.defenseBonus ?? 0);
+
+  // --- INICIALIZAÇÃO ---
   Future<void> _initGame() async {
     await _loadProgress();
     _calculateOfflineProgress();
     _startGameLoop();
-  }
-
-  void setActiveSkill(int index) {
-    activeSkillIndex = (activeSkillIndex == index) ? -1 : index;
-    notifyListeners();
   }
 
   void _startGameLoop() {
@@ -123,10 +150,19 @@ class GameProvider with ChangeNotifier {
       if (activeSkillIndex != -1) {
         _processWork();
       }
+      // O combate agora é independente das outras skills
+      _processCombat();
+
       player.lastUpdate = DateTime.now();
       _saveProgress();
       notifyListeners();
     });
+  }
+
+  // --- PROCESSAMENTO DE TRABALHOS ---
+  void setActiveSkill(int index) {
+    activeSkillIndex = (activeSkillIndex == index) ? -1 : index;
+    notifyListeners();
   }
 
   void _processWork() {
@@ -141,24 +177,16 @@ class GameProvider with ChangeNotifier {
         _addToInventory('peixe_cru');
         break;
       case 2:
-        _processCombat();
-        break;
-      case 3:
         _addToInventory('madeira_carvalho');
-        break;
+        break; // Lenhador agora é index 2
     }
   }
 
-  // --- LÓGICA DE MINERAÇÃO REFINADA ---
   void _processMining(int skillLevel) {
     final random = Random();
-    int roll = random.nextInt(100); // 0 a 99
+    int roll = random.nextInt(100);
 
-    // Se tiver o upgrade, melhora a sorte (diminui o roll para atingir faixas raras)
-    bool hasBronzePickaxe = shopUpgrades[0].isOwned;
-    if (hasBronzePickaxe) {
-      roll -= 10; // "Buff" de sorte
-    }
+    if (shopUpgrades[0].isOwned) roll -= 10;
 
     if (skillLevel >= 10 && roll < 15) {
       _addToInventory('minerio_ferro');
@@ -173,48 +201,103 @@ class GameProvider with ChangeNotifier {
     inventory[itemKey] = (inventory[itemKey] ?? 0) + 1;
   }
 
+  // --- SISTEMA DE COMBATE ---
   void _processCombat() {
-    // Dano baseado na força do player
-    double damage = 5.0 + (player.strength * 1.5);
+    // IMPORTANTE: Usa o totalStrength (Base + Arma)
+    double damage = 5.0 + (totalStrength * 1.5);
     currentEnemy.takeDamage(damage);
 
     if (currentEnemy.isDead) {
-      // Chama a lógica de vitória que gerencia os 10 monstros + Boss
       processVictory();
     }
   }
 
-  // --- OFFLINE E PERSISTÊNCIA ---
-  void _calculateOfflineProgress() {
-    final now = DateTime.now();
-    final secondsAway = now.difference(player.lastUpdate).inSeconds;
+  void processVictory() {
+    if (bossAvailable) {
+      _giveSpecialRewards();
+      bossAvailable = false;
+      monstersDefeatedInGroup = 0;
+      currentMonsterIndex = 0;
+      currentEnemy = allEnemies[0];
+    } else {
+      player.addXp(currentEnemy.xpReward.toDouble());
+      _addToInventory('couro_monstro');
+      monstersDefeatedInGroup++;
 
-    if (secondsAway > 10 && activeSkillIndex != -1) {
-      lastOfflineSeconds = secondsAway;
-      int itemsGained = (secondsAway / 3).floor();
+      if (monstersDefeatedInGroup >= 10) {
+        bossAvailable = true;
+        currentEnemy = Enemy(
+          name: "GENERAL DE CHRONOS",
+          maxHealth: 500,
+          xpReward: 500,
+          goldReward: 200,
+          minLevel: 10,
+        );
+      } else {
+        currentEnemy.reset();
+      }
+    }
+    notifyListeners();
+  }
 
-      skills[activeSkillIndex].addXp(secondsAway * 2.0);
-      String itemKey = _getItemKeyForSkill(activeSkillIndex);
-      inventory[itemKey] = (inventory[itemKey] ?? 0) + itemsGained;
+  void _giveSpecialRewards() {
+    player.gold += 500;
+    player.addXp(1000);
+    _addToInventory('minerio_ouro');
+  }
 
-      offlineSummary =
-          "Você treinou ${skills[activeSkillIndex].name} e coletou $itemsGained itens!";
-      player.lastUpdate = now;
+  // --- LOJA E EQUIPAMENTOS ---
+  void buyUpgrade(int index) {
+    var upgrade = shopUpgrades[index];
+    if (player.gold >= upgrade.price && !upgrade.isOwned) {
+      player.gold -= upgrade.price;
+      upgrade.isOwned = true;
       notifyListeners();
     }
   }
 
-  String _getItemKeyForSkill(int index) {
-    switch (index) {
-      case 0:
-        return 'pedra'; // Offline na mina agora dá pedra por padrão
-      case 1:
-        return 'peixe_cru';
-      case 2:
-        return 'couro_monstro';
-      default:
-        return 'madeira_carvalho';
+  void buyWeapon() {
+    if (player.gold >= 1000) {
+      player.gold -= 1000;
+      equipItem(
+        Equipment(
+          name: "Espada de Bronze",
+          slot: EquipmentSlot.weapon,
+          strengthBonus: 15,
+        ),
+      );
     }
+  }
+
+  // Método equipItem atualizado
+  void equipItem(Equipment item) {
+    switch (item.slot) {
+      case EquipmentSlot.helmet:
+        equippedHelmet = item;
+        break;
+      case EquipmentSlot.armor:
+        equippedArmor = item;
+        break;
+      case EquipmentSlot.leggings:
+        equippedLeggings = item;
+        break;
+      case EquipmentSlot.boots:
+        equippedBoots = item;
+        break;
+      case EquipmentSlot.weapon:
+        equippedWeapon = item;
+        break;
+      case EquipmentSlot.ring:
+        equippedRing = item;
+        break;
+      case EquipmentSlot.potionHP:
+        equippedPotionHP = item;
+        break;
+      case EquipmentSlot.potionMP:
+        equippedPotionMP = item;
+        break;
+    }
+    notifyListeners();
   }
 
   void sellAllResources() {
@@ -225,70 +308,71 @@ class GameProvider with ChangeNotifier {
 
   void distributePoint(String attribute) {
     if (player.pointsToDistribute > 0) {
-      if (attribute == 'strength') player.strength++;
-      if (attribute == 'defense') player.defense++;
-      if (attribute == 'vitality') player.vitality++;
-      if (attribute == 'intelligence') player.intelligence++;
-      if (attribute == 'luck') player.luck++;
+      switch (attribute) {
+        case 'strength':
+          player.strength++;
+          break;
+        case 'defense':
+          player.defense++;
+          break;
+        case 'vitality':
+          player.vitality++;
+          break;
+        case 'intelligence':
+          player.intelligence++;
+          break;
+        case 'luck':
+          player.luck++;
+          break;
+      }
       player.pointsToDistribute--;
       notifyListeners();
     }
   }
 
-  void buyUpgrade(int index) {
-    var upgrade = shopUpgrades[index];
-    if (player.gold >= upgrade.price && !upgrade.isOwned) {
-      player.gold -= upgrade.price;
-      upgrade.isOwned = true;
+  // --- PERSISTÊNCIA E OFFLINE ---
+  void _calculateOfflineProgress() {
+    final now = DateTime.now();
+    final secondsAway = now.difference(player.lastUpdate).inSeconds;
+
+    if (secondsAway > 10 && activeSkillIndex != -1) {
+      lastOfflineSeconds = secondsAway;
+      int itemsGained = (secondsAway / 3).floor();
+      skills[activeSkillIndex].addXp(secondsAway * 2.0);
+
+      String itemKey = (activeSkillIndex == 0)
+          ? 'pedra'
+          : (activeSkillIndex == 1)
+          ? 'peixe_cru'
+          : 'madeira_carvalho';
+
+      inventory[itemKey] = (inventory[itemKey] ?? 0) + itemsGained;
+      offlineSummary =
+          "Você treinou ${skills[activeSkillIndex].name} e coletou $itemsGained itens!";
+      player.lastUpdate = now;
       notifyListeners();
     }
   }
 
-  void processVictory() {
-    if (bossAvailable) {
-      _giveSpecialRewards(); // Recompensa do Boss
-      bossAvailable = false;
-      monstersDefeatedInGroup = 0;
-      currentMonsterIndex = 0;
-      // Reseta para o primeiro inimigo da lista ou evolui o grupo
-      currentEnemy = allEnemies[0];
-    } else {
-      // Recompensa comum
-      player.addXp(currentEnemy.xpReward.toDouble());
-      _addToInventory('couro_monstro');
-
-      monstersDefeatedInGroup++;
-
-      if (monstersDefeatedInGroup >= 10) {
-        bossAvailable = true;
-        // Transforma o inimigo atual em uma versão "Boss"
-        currentEnemy = Enemy(
-          name: "GENERAL DE CHRONOS",
-          maxHealth: 500,
-          xpReward: 500,
-          goldReward: 200,
-          minLevel: 10,
-        );
-      } else {
-        currentEnemy.reset(); // Próximo monstro comum
-      }
-    }
-    notifyListeners();
+Future<void> loadAssets() async {
+  print("DEBUG: Iniciando carregamento da Sprite Sheet..."); // Log 1
+  try {
+    // Tente usar o path completo exatamente como está no seu pubspec.yaml
+    final img = await loadSpriteSheet('lib/assets/items/sprite_sheet_items.png');
+    
+    this.spriteSheet = img;
+    print("DEBUG: Imagem carregada com sucesso! ${img.width}x${img.height}"); // Log 2
+    
+    notifyListeners(); // ISSO É ESSENCIAL para a UI "acordar"
+  } catch (e) {
+    print("DEBUG ERROR: Falha ao carregar asset: $e"); // Log 3
   }
-
-  void _giveSpecialRewards() {
-    player.gold += 500; // Ouro bônus do Boss
-    player.addXp(1000); // XP massivo
-    _addToInventory('minerio_ouro'); // Item raro
-  }
-
-  // --- SHARED PREFS ---
+}
   Future<void> _saveProgress() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('gold', player.gold);
     await prefs.setInt('activeSkill', activeSkillIndex);
     await prefs.setString('lastUpdate', player.lastUpdate.toIso8601String());
-    // Sugestão sênior: Salvar o inventory aqui também para não perder itens
   }
 
   Future<void> _loadProgress() async {

@@ -1,9 +1,10 @@
 // lib/main.dart
 
-import 'package:chronos_rpg/screens/ProfileScreen.dart';
+import 'package:chronos_rpg/screens/Profile_Screen.dart';
 import 'package:chronos_rpg/screens/combat_screen.dart';
 import 'package:chronos_rpg/screens/inventory_screen.dart';
 import 'package:chronos_rpg/screens/merchant_screen.dart';
+import 'package:chronos_rpg/widgets/game_icon.dart';
 import 'package:chronos_rpg/widgets/skill_card.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -13,7 +14,7 @@ import 'widgets/offline_dialog.dart';
 void main() {
   runApp(
     ChangeNotifierProvider(
-      create: (context) => GameProvider(),
+      create: (context) => GameProvider()..loadAssets(),
       child: const MyApp(),
     ),
   );
@@ -65,9 +66,32 @@ class _GameScreenState extends State<GameScreen> {
     });
   }
 
+  Widget _buildSquareButton(
+    BuildContext context, {
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 60, // Largura do quadrado
+        height: 60, // Altura do quadrado
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1), // Fundo sutil com a cor do ícone
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3), width: 1.5),
+        ),
+        child: Icon(icon, color: color, size: 28),
+      ),
+    );
+  }
+
+  @override
+  // ... (mantenha os imports e o início da classe)
   @override
   Widget build(BuildContext context) {
-    // Usamos select para otimizar: a tela só reconstrói se essas propriedades mudarem
     final game = context.watch<GameProvider>();
 
     return Scaffold(
@@ -78,6 +102,7 @@ class _GameScreenState extends State<GameScreen> {
         ),
         centerTitle: true,
       ),
+
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -90,90 +115,87 @@ class _GameScreenState extends State<GameScreen> {
           children: [
             const SizedBox(height: 10),
 
+            // --- NOVO LAYOUT DO PERSONAGEM (ESTILO CARD QUADRADO) ---
+            Center(
+              child: Container(
+                width:
+                    140, // Um pouco menor que no perfil para caber melhor na principal
+                height: 140,
+                margin: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A1A), // Fundo cinza escuro sólido
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: Colors.white10, width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.4),
+                      blurRadius: 8,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(10.0),
+                  child: Image.asset(
+                    'lib/assets/images/pesona.png',
+                    fit: BoxFit.contain, // Mantém o sprite inteiro sem cortar
+                    filterQuality:
+                        FilterQuality.none, // Essencial para Pixel Art
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Icon(
+                        Icons.person,
+                        size: 60,
+                        color: Colors.white10,
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+
             // PAINEL DE STATUS (REATIVO)
             _buildStatusPanel(game),
 
             const SizedBox(height: 10),
             const Divider(color: Colors.white10, height: 1),
 
-            // LISTA DE SKILLS
+           // LISTA DE SKILLS COM O NOVO ÍCONE
             Expanded(
               child: ListView.builder(
                 itemCount: game.skills.length,
                 padding: const EdgeInsets.symmetric(vertical: 10),
                 itemBuilder: (context, index) {
+                  final skill = game.skills[index];
                   return SkillCard(
-                    skill: game.skills[index],
+                    skill: skill,
+                    // Aqui passamos o GameIcon se a imagem já estiver carregada
+                    leading: game.spriteSheet != null 
+                      ? GameIcon(iconName: skill.iconPath, spriteSheet: game.spriteSheet!)
+                      : const CircularProgressIndicator(),
                     onTap: () => game.setActiveSkill(index),
-                    // Passamos se está ativa para o widget de Card
-                    // Se o seu SkillCard ainda não recebe 'isActive', podemos adicionar agora
                     isActive: game.activeSkillIndex == index,
                   );
                 },
               ),
             ),
 
-            // BOTÕES DE NAVEGAÇÃO
+            // BOTÕES DE NAVEGAÇÃO RÁPIDA (RESTAURADOS)
             Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-              child: Column(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Botão de Inventário (Destaque Secundário)
-                  ElevatedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const InventoryScreen(),
-                      ),
-                    ),
-                    icon: const Icon(Icons.inventory_2_outlined),
-                    label: const Text("ABRIR MOCHILA"),
-                    style: _buttonStyle(Colors.blueGrey.withOpacity(0.2)),
-                  ),
-                  const SizedBox(height: 12),
-                  // Botão do Mercador (Destaque Principal)
-                  ElevatedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const MerchantScreen(),
-                      ),
-                    ),
-                    icon: const Icon(Icons.storefront, color: Colors.amber),
-                    label: const Text("VISITAR MERCADOR"),
-                    style: _buttonStyle(
-                      Colors.amber.withOpacity(0.1),
-                      borderColor: Colors.amber.withOpacity(0.5),
-                    ),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const CombatScreen(),
-                      ),
-                    ),
-                    icon: const Icon(
-                      Icons.colorize,
-                      color: Colors.redAccent,
-                    ), // Ícone de espada/combate
-                    label: const Text("CAMPO DE BATALHA"),
-                    style: _buttonStyle(
-                      Colors.red.withOpacity(0.1),
-                      borderColor: Colors.redAccent.withOpacity(0.5),
-                    ),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const ProfileScreen(),
-                      ),
-                    ),
-                    icon: const Icon(Icons.person_search),
-                    label: const Text("MEU PERFIL / ATRIBUTOS"),
-                    style: _buttonStyle(Colors.white.withOpacity(0.05)),
-                  ),
+                  _buildSquareButton(context, icon: Icons.person_search, color: Colors.white, 
+                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
+                  const SizedBox(width: 15),
+                  _buildSquareButton(context, icon: Icons.inventory_2_outlined, color: Colors.blueAccent, 
+                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InventoryScreen()))),
+                  const SizedBox(width: 15),
+                  _buildSquareButton(context, icon: Icons.storefront, color: Colors.amber, // Ícone de loja restaurado
+                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MerchantScreen()))),
+                  const SizedBox(width: 15),
+                  _buildSquareButton(context, icon: Icons.colorize, color: Colors.redAccent, 
+                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CombatScreen()))),
                 ],
               ),
             ),
